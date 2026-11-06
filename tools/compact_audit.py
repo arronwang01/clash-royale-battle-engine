@@ -32,7 +32,9 @@ for f in files:
     rows += len(of)
     for c in range(E.F):
         cols[c].append(of[:, c])
-    ti, tf = d['x_ctok_int'], d['x_ctok_float'].astype(np.float32) * CC.TF_SCALE
+    ti, tf = d['x_ctok_int'], d['x_ctok_float'].astype(np.float32)
+    for t, scale in CC.TF_SCALE.items():              # back to raw values, per token type
+        tf[ti[..., 1] == t] *= scale
     m = ti[..., 0] >= 0
     for t in np.unique(ti[..., 1][m]):
         sel = m & (ti[..., 1] == t)
