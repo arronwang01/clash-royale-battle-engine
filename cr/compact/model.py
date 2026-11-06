@@ -49,6 +49,13 @@ class CompactEntityEncoder(nn.Module):
         self.floats = nn.Linear(V.F, width)
         self.ids = nn.Linear(5 * embed + 3 * embed, width)
         self.token = nn.Sequential(nn.Linear(V.VALUES_W + 3 * embed, width), nn.GELU(), nn.Linear(width, width))
+        # Adding this to a trained model (2026-11-06): the three layers that write into the object token start at zero, so a
+        # model warm-started from a checkpoint without it computes exactly what the checkpoint did (the new inputs come in
+        # only as far as training finds them useful), and gradients still reach every layer from the first step
+        for layer in (self.floats, self.ids, self.token[-1]):
+            nn.init.zeros_(layer.weight)
+            nn.init.zeros_(layer.bias)
+        self.drop = 0.0      # train.py --compact_drop: the share of samples trained without the new inputs (branch dropout)
 
     def forward(self, obj_int, obj_float, tok_int, tok_float):
         B, O, _ = obj_int.shape
@@ -71,6 +78,9 @@ class CompactEntityEncoder(nn.Module):
             valid = (owner >= 0) & (owner < O)
             t = t * valid.unsqueeze(-1)
             out = out.scatter_add(1, owner.clamp(0, O - 1).unsqueeze(-1).expand(-1, -1, t.shape[-1]), t)
+        if self.training and self.drop > 0:         # whole samples without the branch: never dependent on it alone
+            keep = (torch.rand(B, 1, 1, device=out.device) >= self.drop).to(out.dtype)
+            out = out * keep
         return out
 
 

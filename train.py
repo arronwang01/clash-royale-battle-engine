@@ -31,7 +31,9 @@ DEFAULTS = dict(epochs=4.0, batch=32, chunk=128, workers=4, lr=3e-4, final_lr=1.
                 next_play=0.5, card_dim=32, object_dim=32, attention_layers=1, conv_channels=48, conv_layers=4, core=256, board=0,
                 res_blocks=0, flight_grid=0, tile_blocks=0, board_rows=8, board_cols=4, res_norm=1, dist_bias=0,
                 card_stats=0, arch=1, width=384, layers=10, heads=6, tile_layers=2, ability_labels=0, max_train=0, max_val=0, val_every=0, val_after='',
-                seed=0, log_every=50, checkpoint_every=1000, device='cuda', compact=0)
+                seed=0, log_every=50, checkpoint_every=1000, device='cuda', compact=0, init='', freeze_steps=0, compact_drop=0.0)
+# adding the compact inputs to a trained model (6 Nov): --init CHECKPOINT (its weights; only the new branch may be missing),
+# --freeze_steps N (only the new branch trains for the first N steps), --compact_drop P (share of samples without it)
 # final_lr: the learning rate falls linearly to lr x final_lr by the last step (1.0 = constant)
 # validation (31 Oct): after every pass, and every val_every steps (0 = only after passes; RUN/best.pt keeps the step with
 # the lowest 'val' loss); val_after 'YYYY-MM-DD': battles from that day on are left out of training and reported as
@@ -101,6 +103,21 @@ def train(data, out, settings):
     policy = build(config, C.effect_matrix(vocab), stats).to(device)
     optimizer = torch.optim.AdamW(policy.parameters(), lr=settings['lr'], weight_decay=settings['weight_decay'], fused=cuda)
     step = 0
+    if getattr(policy, 'compact', None) is not None:
+        policy.compact.drop = settings.get('compact_drop', 0.0)
+    fresh_init = bool(settings.get('init')) and not (out / 'latest.pt').exists()
+    if fresh_init:
+        saved = torch.load(settings['init'], map_location='cpu', weights_only=False)
+        state = saved['model']
+        own = policy.state_dict()
+        shaped = [k for k, v in state.items() if k in own and own[k].shape != v.shape]
+        missing = [k for k in own if k not in state]
+        unexpected = [k for k in state if k not in own]
+        if shaped or unexpected or any(not k.startswith('compact.') for k in missing):
+            raise SystemExit(f'--init {settings["init"]}: only the compact branch may be new; reshaped {shaped[:5]}, '
+                             f'unexpected {unexpected[:5]}, missing {[k for k in missing if not k.startswith("compact.")][:5]}')
+        policy.load_state_dict(state, strict=False)
+        init_note = dict(init=str(settings['init']), init_step=saved.get('step'), loaded=len(state), new=len(missing))
     if (out / 'latest.pt').exists():
         saved = torch.load(out / 'latest.pt', map_location='cpu', weights_only=False)
         policy.load_state_dict(saved['model'])
@@ -164,6 +181,28 @@ def train(data, out, settings):
         if world > 1:
             dist.barrier()
 
+    def set_frozen(frozen):
+        for name, p in policy.named_parameters():
+            if not name.startswith('compact.'):
+                p.requires_grad_(not frozen)
+
+    if fresh_init and rank == 0:
+        # step 0: the warm-started model must compute exactly what the checkpoint did (the new branch writes zeros)
+        policy.eval()
+        xs, ts = next(iter(loader(val_sets['val'] or train_entries, 0, validation=True)))
+        xs = {k: v.to(device) for k, v in xs.items()}
+        with torch.no_grad():
+            with_branch = policy(xs)
+            config.compact, saved_flag = 0, config.compact
+            without = policy(xs)
+            config.compact = saved_flag
+        init_note['step0_max_difference'] = max(
+            float((with_branch[k].float().nan_to_num() - without[k].float().nan_to_num()).abs().max())
+            for k in ('tokens', 'core', 'value'))
+        write(dict(step=step, split='init', **init_note))
+        if init_note['step0_max_difference'] != 0.0:
+            raise SystemExit('the warm-started model does not reproduce the checkpoint at step 0')
+        policy.train()
     started, window = time.monotonic(), []
     while step < total:
         # a pass over the data; a resumed run starts a fresh order (seeded by the step it resumes at)
@@ -174,6 +213,8 @@ def train(data, out, settings):
             for group in optimizer.param_groups:
                 group['lr'] = settings['lr'] * min(1.0, (step + 1) / max(1, settings['warmup'])) * \
                     (1 - (1 - settings.get('final_lr', 1.0)) * step / total)
+            if settings.get('freeze_steps'):      # only the new branch learns until freeze_steps, then everything
+                set_frozen(step < settings['freeze_steps'])
             optimizer.zero_grad(set_to_none=True)
             with autocast():
                 loss, metrics = objective(xs, ts)
