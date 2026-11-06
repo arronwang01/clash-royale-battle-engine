@@ -105,7 +105,9 @@ VECTORS = [('us.dx', 'us.dy'), ('us.facing[0]', 'us.facing[1]')]
 COL = {name: i for i, name in enumerate(E.FLOAT_SLOTS)}
 OF_SCALE = np.asarray([E.SCALES['obj_float'][n] for n in E.FLOAT_SLOTS], np.float32) if E.SCALES else np.ones(E.F, np.float32)
 TF_SCALE = {int(t): np.asarray(v, np.float32) for t, v in E.SCALES['tok_float'].items()} if E.SCALES else {}
-CLIP = 64.0          # a guard only: the scales are the non-zero p99, so real values sit well inside it
+CLIP = 64.0          # a guard only: the scales are the non-zero p99, so real values sit well inside it. On 4 battles the scales
+                     # were not measured on, only the hero Tombstone's visual dummy (3,719,996 hp, invulnerable) passes it
+                     # (hp / max hp / health words, 92 rows) and 6 running-action tokens (object ids among their state values)
 
 
 def owner_arrays(record, object_ids, owner, rotate, max_tokens):
