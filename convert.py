@@ -510,6 +510,8 @@ class Recorder:
                 # frame() already read the objects; share that snapshot instead of walking native memory twice.
                 self.decisions.append({'tick': tick, 'lean': {k: v for k, v in lean.items() if k != 'objects'},
                                        'objects': lean['objects'], 'units': r.unit_states(env.battle)})
+                if getattr(self, 'compact', None) is not None:       # --compact: the reader's compact encoding
+                    self.decisions[-1]['compact'] = self.compact.record(tick)
             if ended:
                 return frames, tick, True
         if env.stalled:
@@ -776,6 +778,28 @@ def _pack(x, t):
     return arrays
 
 
+COMPACT_MAX_TOKENS = 64
+
+
+def compact_arrays(game, x, owner):
+    """the decisions' compact records for `owner`, packed like the object arrays: x_cobj_int [objects, 8] and x_cobj_float
+    [objects, F] (float16, scaled) for the present object rows of each decision in order, x_ctok_int [T, K, 4] /
+    x_ctok_float [T, K, V] (owner and referenced object as the decision's object slot, -1 none)"""
+    from cr.compact import capture as CC
+    present = x['obj_side'] > 0
+    ints, floats, tint, tfloat, dropped = [], [], [], [], 0
+    for d, mask in zip(game['decisions'], present):
+        n = int(mask.sum())
+        ids = [o['nativeObjectId'] for o in sorted(d['objects'], key=lambda o: (o['nativeObjectId'] not in TOWER_IDS,
+                                                                                    o['nativeObjectId']))][:n]
+        ci, cf, ti, tf, lost = CC.owner_arrays(d.get('compact'), ids, owner, C.rotate, COMPACT_MAX_TOKENS)
+        ints.append(ci); floats.append(cf); tint.append(ti); tfloat.append(tf); dropped += lost
+    k = max(1, max(int((t[:, 0] >= 0).sum()) for t in tint))
+    return {'x_cobj_int': np.concatenate(ints).astype(np.int16), 'x_cobj_float': np.concatenate(floats).astype(np.float16),
+            'x_ctok_int': np.stack([t[:k] for t in tint]).astype(np.int16),
+            'x_ctok_float': np.stack([t[:k] for t in tfloat]).astype(np.float16)}
+
+
 def write_archive(path, game, vocab, legal, metadata):
     """Both player views (or none, for a rejected game) in one archive, renamed into place when complete."""
     metadata = dict(metadata, entries=[])
@@ -795,6 +819,9 @@ def write_archive(path, game, vocab, legal, metadata):
                 t = targets(x, y)
                 for name, value in _pack(x, t).items():
                     put(f'p{owner}_{name}', value)
+                if game['decisions'] and 'compact' in game['decisions'][0]:
+                    for name, value in compact_arrays(game, x, owner).items():
+                        put(f'p{owner}_{name}', value)
                 side = 'team' if owner == episode.get('source_team_owner') else 'opponent'
                 # won / expert (a roster player of the HF dataset) / battle_time: for validation sets and filters (31 Oct)
                 metadata['entries'].append(dict(file=path.name, tag=metadata['tag'], owner=owner,
@@ -841,7 +868,7 @@ def payload_of(job, tables):
     return json.loads(table['payload_json'][job['row']].as_py())
 
 
-def worker(index, engine, jobs, out, clapha_engine, seeds=0):
+def worker(index, engine, jobs, out, clapha_engine, seeds=0, compact=False):
     name, libdir, assets = engine
     sys.path.insert(0, str(Path(clapha_engine).expanduser() / 'crx'))
     log = open(out / f'log-{name}-{index}.txt', 'a')
@@ -878,6 +905,11 @@ def worker(index, engine, jobs, out, clapha_engine, seeds=0):
         game = None
         try:
             rec = Recorder(env)
+            if compact:
+                if not hasattr(env, '_compact'):
+                    from cr.compact.capture import Capture
+                    env._compact = Capture(env, out / 'native-work' / f'reader-{name}-{index}')
+                rec.compact = env._compact
             result = play_exact(rec, payload, seeds=seeds)
             fid = result['fidelity']
             entry.update(hp_error=int(fid['tower_hp_error']), winner=bool(fid['winner_match']),
@@ -940,7 +972,8 @@ def convert(args):
 
         def start(name, index):
             (out / f'current-{name}-{index}.txt').unlink(missing_ok=True)
-            process = ctx.Process(target=worker, args=(index, engines[name], queues[name], out, args.clapha_engine, args.seeds))
+            process = ctx.Process(target=worker, args=(index, engines[name], queues[name], out, args.clapha_engine, args.seeds,
+                                                                    getattr(args, 'compact', False)))
             process.start()
             running[name, index] = process
 
@@ -1044,6 +1077,8 @@ def main():
     parser.add_argument('--limit', type=int, default=0, help='convert only the first N assigned games')
     parser.add_argument('--seeds', type=int, default=1024, help="seeds tried for a battle that depends on the seed (dice); "
                         "the search stops early when 5 seeds give the same result")
+    parser.add_argument('--compact', action='store_true', help='also store the compact object encoding of the reader '
+                        '(cr/compact; build 160635001 only): x_cobj_int / x_cobj_float per object, x_ctok_* per decision')
     convert(parser.parse_args())
 
 

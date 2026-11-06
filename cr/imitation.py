@@ -94,6 +94,10 @@ class Objective(nn.Module):
 
 
 # ---- the data -----------------------------------------------------------------------------------------------------------
+COMPACT_OBJECT_KEYS = ('cobj_int', 'cobj_float')   # the compact encoding (convert.py --compact): one row per object
+COMPACT_TOKEN_KEYS = ('ctok_int', 'ctok_float')    # [T, K, ...] per decision, K differs between games: padded per batch
+
+
 def read(path, owner):
     """One player's arrays from a converted game (both players' views share one archive)."""
     with np.load(path, allow_pickle=False) as archive:
@@ -112,10 +116,12 @@ def chunks(data, chunk, validation, rng):
         x, t = {}, {}
         for name, v in data.items():
             k = name[2:]
+            if name == 'x_ctok_dropped':              # a per-game count of the first --compact archives, not an input
+                continue
             if name.startswith('t_'):
                 t[k] = v[s:e]
             elif name.startswith('x_'):
-                if k in C.OBJECT_KEYS:
+                if k in C.OBJECT_KEYS or k in COMPACT_OBJECT_KEYS:
                     a = np.zeros((e - s, n, *v.shape[1:]), v.dtype)
                     for i, count in enumerate(counts):
                         a[i, :count] = v[offsets[s + i]:offsets[s + i + 1]]
@@ -123,7 +129,8 @@ def chunks(data, chunk, validation, rng):
                     a = np.unpackbits(v[s:e], axis=-1, count=4 * CELLS).reshape(e - s, 4, H, W).astype(bool)
                 else:
                     a = v[s:e]
-                x[k] = a.astype(np.int64) if a.dtype == np.int32 else a
+                x[k] = a.astype(np.int64) if a.dtype in (np.int32, np.int16) else (
+                    a.astype(np.float32) if a.dtype == np.float16 else a)
         yield x, t
 
 
@@ -173,10 +180,16 @@ def collate(items):
     L = max(len(t['what']) for _, t in items)
     O = max(1, max(int((x['obj_side'] > 0).sum(-1).max()) for x, _ in items))
 
+    K = max([1] + [x['ctok_int'].shape[1] for x, _ in items if 'ctok_int' in x])
+
     def pad(a, k):
-        if k in C.OBJECT_KEYS:
+        if k in C.OBJECT_KEYS or k in COMPACT_OBJECT_KEYS:
             a = a[:, :O]
-        out = np.zeros((L, O, *a.shape[2:]) if k in C.OBJECT_KEYS else (L, *a.shape[1:]), a.dtype)
+            out = np.zeros((L, O, *a.shape[2:]), a.dtype)
+        elif k in COMPACT_TOKEN_KEYS:     # tokens past a game's K, and of padded decisions, have no owner (-1)
+            out = np.full((L, K, *a.shape[2:]), -1 if k == 'ctok_int' else 0, a.dtype)
+        else:
+            out = np.zeros((L, *a.shape[1:]), a.dtype)
         out[(slice(0, len(a)), *map(slice, a.shape[1:]))] = a
         return out
     xs = {k: torch.from_numpy(np.stack([pad(x[k], k) for x, _ in items])) for k in items[0][0]}

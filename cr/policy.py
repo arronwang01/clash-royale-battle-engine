@@ -47,6 +47,7 @@ class Config:
     layers: int = 10
     heads: int = 6
     tile_layers: int = 2
+    compact: int = 0       # 1 (6 Nov): the reader's compact object encoding (cr/compact) added to each object token (arch 2)
 
 
 class ResBlock(nn.Module):
@@ -394,6 +395,9 @@ class TokenPolicy(nn.Module):
         self.register_buffer('effect_table', table.float())
         self.effect = mlp(d + 1 + c.effect_fields, d, d)
         self.object = mlp(3 * d + C.OBJ_FLOATS, D, D)
+        if c.compact:
+            from cr.compact.model import CompactEntityEncoder
+            self.compact = CompactEntityEncoder(D)
         self.summary = mlp(C.SCALARS, D, D)
         self.hand = mlp(2 * d + C.HAND_FLOATS, D, D)
         self.cycle = nn.Linear(d, D)
@@ -433,6 +437,8 @@ class TokenPolicy(nn.Module):
         eff = (self.effect(eff) * (f['eff_id'] > 0).unsqueeze(-1)).sum(-2)
         objects = self.object(torch.cat([card(f['obj_card']), card(f['obj_data']) + self.side(f['obj_side']) +
                                          self.kind(f['obj_kind']), eff, f['obj_float']], -1))
+        if self.config.compact:
+            objects = objects + self.compact(f['cobj_int'], f['cobj_float'].float(), f['ctok_int'], f['ctok_float'].float())
         flight_card = torch.cat([f['own_flight_card'].reshape(N, 1), f['opp_flight_card']], 1)
         flight_float = torch.cat([f['own_flight_float'].reshape(N, 1, 4), f['opp_flight_float']], 1)
         fixed = torch.cat([

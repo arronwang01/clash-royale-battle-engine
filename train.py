@@ -31,7 +31,7 @@ DEFAULTS = dict(epochs=4.0, batch=32, chunk=128, workers=4, lr=3e-4, final_lr=1.
                 next_play=0.5, card_dim=32, object_dim=32, attention_layers=1, conv_channels=48, conv_layers=4, core=256, board=0,
                 res_blocks=0, flight_grid=0, tile_blocks=0, board_rows=8, board_cols=4, res_norm=1, dist_bias=0,
                 card_stats=0, arch=1, width=384, layers=10, heads=6, tile_layers=2, ability_labels=0, max_train=0, max_val=0, val_every=0, val_after='',
-                seed=0, log_every=50, checkpoint_every=1000, device='cuda')
+                seed=0, log_every=50, checkpoint_every=1000, device='cuda', compact=0)
 # final_lr: the learning rate falls linearly to lr x final_lr by the last step (1.0 = constant)
 # validation (31 Oct): after every pass, and every val_every steps (0 = only after passes; RUN/best.pt keeps the step with
 # the lowest 'val' loss); val_after 'YYYY-MM-DD': battles from that day on are left out of training and reported as
@@ -97,7 +97,7 @@ def train(data, out, settings):
                     board=settings.get('board', 0), card_stats=0 if stats is None else stats.shape[1], inputs=2,
                     **{k: settings.get(k, v) for k, v in dict(res_blocks=0, flight_grid=0, tile_blocks=0, board_rows=8,
                                                               board_cols=4, res_norm=1, dist_bias=0, arch=1, width=384, layers=10,
-                                                              heads=6, tile_layers=2).items()})
+                                                              heads=6, tile_layers=2, compact=0).items()})
     policy = build(config, C.effect_matrix(vocab), stats).to(device)
     optimizer = torch.optim.AdamW(policy.parameters(), lr=settings['lr'], weight_decay=settings['weight_decay'], fused=cuda)
     step = 0
