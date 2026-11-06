@@ -386,23 +386,37 @@ SCALES_PATH = os.path.join(DATA, f'compact_scales-{BUILD}.json')
 
 
 def build_scales(paths: list[str], every: int = 5) -> dict:
-    """per obj_float column and per token value position: the 99th percentile of |value| over the frames (1 where always 0);
-    a model divides by it. Written to data/compact_scales-BUILD.json"""
-    cols, toks = [[] for _ in range(F)], [[] for _ in range(VALUES_W)]
+    """per obj_float column the 99th percentile of its NON-ZERO |values| (1 where never non-zero), and the same per token type
+    and value position; a model divides by it. Non-zero only (2026-11-06): a timer that is 0 in 99% of rows had a p99 of 0
+    over all rows, a scale of 1, and its real values (thousands of ms) were clipped flat. Written to SCALES_PATH."""
+    cols, toks = [[] for _ in range(F)], {}
     for path in paths:
         opener = gzip.open if path.endswith('.gz') else open
         for n, line in enumerate(opener(path, 'rt')):
             if not line.startswith('{') or n % every:
                 continue
             enc = encode_frame(json.loads(line))
+            of = np.abs(enc['obj_float'])
+            raw = enc['obj_float']
             for c in range(F):
-                cols[c].extend(np.abs(enc['obj_float'][:, c]).tolist())
-            for c in range(VALUES_W):
-                toks[c].extend(np.abs(enc['tok_float'][:, c]).tolist())
+                v = raw[:, c]
+                cols[c].extend(np.abs(v[(v != 0) & (v != -1)]).tolist())     # -1 = 'none' in many fields: not a size
+            for ti, tf in zip(enc['tok_int'], np.abs(enc['tok_float'])):
+                rows = toks.setdefault(int(ti[1]), [[] for _ in range(VALUES_W)])
+                for k in range(VALUES_W):
+                    if tf[k] and tf[k] != 1:
+                        rows[k].append(float(tf[k]))
     q = lambda xs: float(max(1.0, np.percentile(xs, 99))) if xs else 1.0      # noqa: E731
-    out = {'build': BUILD, 'note': 'p99 of |value| per column over the frames listed; divide by it',
+    scales = [q(x) for x in cols]
+    # board coordinates: the board's size, whatever the sample held (a surface point is -1 until a unit digs: its p99 was 1)
+    for name in ('x', 'tx', 'us.surface[0]', 'us.aim[0]', 'us.start[0]', 'us.waypoint[0]'):
+        scales[FLOAT_SLOTS.index(name)] = 18000.0
+    for name in ('y', 'ty', 'us.surface[1]', 'us.aim[1]', 'us.start[1]', 'us.waypoint[1]'):
+        scales[FLOAT_SLOTS.index(name)] = 32000.0
+    out = {'build': BUILD, 'note': 'p99 of NON-ZERO |value| per column / per token type and value position; divide by it',
            'frames_from': [os.path.basename(p) for p in paths],
-           'obj_float': dict(zip(FLOAT_SLOTS, [q(x) for x in cols])), 'tok_float': [q(x) for x in toks]}
+           'obj_float': dict(zip(FLOAT_SLOTS, scales)),
+           'tok_float': {str(t): [q(x) for x in rows] for t, rows in sorted(toks.items())}}
     json.dump(out, open(SCALES_PATH, 'w'), indent=0)
     return out
 

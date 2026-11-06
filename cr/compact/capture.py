@@ -104,7 +104,8 @@ PAIRS = [('x', 'y'), ('tx', 'ty'), ('us.surface[0]', 'us.surface[1]'), ('us.aim[
 VECTORS = [('us.dx', 'us.dy'), ('us.facing[0]', 'us.facing[1]')]
 COL = {name: i for i, name in enumerate(E.FLOAT_SLOTS)}
 OF_SCALE = np.asarray([E.SCALES['obj_float'][n] for n in E.FLOAT_SLOTS], np.float32) if E.SCALES else np.ones(E.F, np.float32)
-TF_SCALE = np.asarray(E.SCALES['tok_float'], np.float32) if E.SCALES else np.ones(E.VALUES_W, np.float32)
+TF_SCALE = {int(t): np.asarray(v, np.float32) for t, v in E.SCALES['tok_float'].items()} if E.SCALES else {}
+CLIP = 64.0          # a guard only: the scales are the non-zero p99, so real values sit well inside it
 
 
 def owner_arrays(record, object_ids, owner, rotate, max_tokens):
@@ -150,6 +151,6 @@ def owner_arrays(record, object_ids, owner, rotate, max_tokens):
             dropped += 1
             continue
         t_int[n] = [s, ti[1], ti[2], src_to_slot.get(ti[3], -1) if ti[3] >= 0 else -1]
-        t_float[n] = np.asarray(tf, np.float32) / TF_SCALE
+        t_float[n] = np.asarray(tf, np.float32) / TF_SCALE.get(int(ti[1]), 1.0)
         n += 1
-    return c_int, np.clip(c_float, -8, 8), t_int, np.clip(t_float, -8, 8), dropped
+    return c_int, np.clip(c_float, -CLIP, CLIP), t_int, np.clip(t_float, -CLIP, CLIP), dropped
