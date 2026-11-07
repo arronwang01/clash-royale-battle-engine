@@ -1,11 +1,15 @@
 # Inputs v2: a compact object encoding (2,750 -> 283 + tokens)
 
 **2026-11-07: v2 only ADDS inputs.** Every input of the existing pipeline stays exactly as it is; only a proven bug may
-change one. Commit 1535f9d on `feat/inputs-v2-causal-history` replaces some from v2 -- undo these: `pending_inputs`
-replacing `own_flight_*` / `opp_flight_*` (own plays then show only 6 ticks before landing instead of from the tap, the
-opponent's 6 instead of 2-21, and the elixir mask counts in-flight elixir as still there); `x_ability` /
-`x_ability_card` from v2; the `hand_float` hero / evolution flags from v2's deck; the objects' `ability_button` from v2.
-（中文：v2 只追加输入，原有输入一律不改；1535f9d 里用 v2 覆盖的 flight / ability / 手牌形态 / ability_button 请撤回。）
+change one. In 1535f9d on `feat/inputs-v2-causal-history`:
+- **Must undo:** `pending_inputs` replacing `own_flight_*` / `opp_flight_*`. Own plays then show only 6 ticks before
+  landing instead of from the tap (~22), the opponent's 6 instead of `OPP_LEADS` (5-19, median 13), `playable()` counts
+  in-flight elixir as still there for ~16 ticks after each tap, and live play (Jason's flights) differs from training.
+  `own_flight_slots=2` also changes a parameter's shape, so a Jason checkpoint cannot load as is. Keep the archive's flights.
+- **Keep only if equal to Jason's converter:** `x_ability` / `x_ability_card`, `hand_float[4:6]` and the objects'
+  `ability_button`, filled from v2 (they look like fills for older archives). Compare on one battle with `cr/observation.py`.
+（中文：v2 只追加输入，原有输入一律不改。必须撤回：用 v2 6-tick 队列覆盖 own/opp flight。ability / 手牌形态 / ability_button
+的填充：和 Jason 转换器在一局上一致就保留，否则用 Jason 的。）
 
 **中文摘要：** v2 每个实体 2750 维不是信息量大，是展开方式造成的：每个“出现过的路径”（含列表下标，如 `us.acts[3]`、`us.hit_by[9][0]`）占一列，再乘 2（值 + 有效位）。实测真实实体非零数中位只有 24–29 个，最多 54。另外两个问题：所有 ID（动作、buff、变量、对象 id）都被 signed-log 当成浮点数（两个不同动作 ID 变成 21.33 和 21.26，几乎一样）；冻结布局在实盘遇到训练没见过的列表长度会直接报错（`V2 field exceeds frozen layout: us.acts[3]`，实测）。本 PR 加入紧凑编码：每实体 8 个 ID（走 embedding）+ 283 维固定槽（所有实体同一含义）+ 变长部分做成 token，并附模型模块和测试；所有输入都能从编码精确还原（4 局完整对局 1110 万个值 0 差异）。接入方法见下面第 4 节。
 
