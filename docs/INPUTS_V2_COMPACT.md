@@ -1,5 +1,12 @@
 # Inputs v2: a compact object encoding (2,750 -> 283 + tokens)
 
+**2026-11-07: v2 only ADDS inputs.** Every input of the existing pipeline stays exactly as it is; only a proven bug may
+change one. Commit 1535f9d on `feat/inputs-v2-causal-history` replaces some from v2 -- undo these: `pending_inputs`
+replacing `own_flight_*` / `opp_flight_*` (own plays then show only 6 ticks before landing instead of from the tap, the
+opponent's 6 instead of 2-21, and the elixir mask counts in-flight elixir as still there); `x_ability` /
+`x_ability_card` from v2; the `hand_float` hero / evolution flags from v2's deck; the objects' `ability_button` from v2.
+（中文：v2 只追加输入，原有输入一律不改；1535f9d 里用 v2 覆盖的 flight / ability / 手牌形态 / ability_button 请撤回。）
+
 **中文摘要：** v2 每个实体 2750 维不是信息量大，是展开方式造成的：每个“出现过的路径”（含列表下标，如 `us.acts[3]`、`us.hit_by[9][0]`）占一列，再乘 2（值 + 有效位）。实测真实实体非零数中位只有 24–29 个，最多 54。另外两个问题：所有 ID（动作、buff、变量、对象 id）都被 signed-log 当成浮点数（两个不同动作 ID 变成 21.33 和 21.26，几乎一样）；冻结布局在实盘遇到训练没见过的列表长度会直接报错（`V2 field exceeds frozen layout: us.acts[3]`，实测）。本 PR 加入紧凑编码：每实体 8 个 ID（走 embedding）+ 283 维固定槽（所有实体同一含义）+ 变长部分做成 token，并附模型模块和测试；所有输入都能从编码精确还原（4 局完整对局 1110 万个值 0 差异）。接入方法见下面第 4 节。
 
 ## 1. Where 2,750 came from
@@ -58,7 +65,7 @@ Size at the busiest frame measured: about 28 KB against about 319 KB at 2,750 fl
 This PR adds the encoder, the model piece and tests; it does not rewire the dataset and training scripts, so nothing
 existing changes behaviour. To switch:
 
-1. **Dataset** (`v2_dataset.encode_episode`): next to (or instead of) `entity_layout.encode(entity)`, call
+1. **Dataset** (`v2_dataset.encode_episode`): next to the existing object inputs (in place of `entity_layout.encode(entity)`, the 2,750-wide v2 layout), call
    `v2_compact.scaled(v2_compact.encode_frame({'entities': canonical_entities}))` per frame and store `obj_int`, `obj_float`
    per object (same order as the other object arrays) and the frame's tokens with their owner indices. Targets: raw reader
    frames carry an address, which `encode_frame` resolves through the objects' `address`; frames where targets are object ids
@@ -71,7 +78,9 @@ existing changes behaviour. To switch:
    `obj_float`, as for `obj_float` today; the members' tokens all go to the group's index.
 4. **Check your own data:** `python -m cr.inputs_v2.v2_compact FRAMES.jsonl.gz` prints PASS when every input of those frames
    is in the encoding.
-5. Re-make the training samples. The v1 47 object features are all inside the 283 and can be dropped.
+5. Re-make the training samples. **Keep every existing input** (the v1 47 object features, hand, cycle, elixir, own /
+   opponent plays in flight, abilities, legal masks) exactly as `cr/observation.py` makes them: the compact block is added
+   to each object, it replaces nothing. Values it shares with v1 (position, hp) are simply there twice.
 
 ## 5. Tests (`tests/test_v2_compact.py`, 24 frames of a converted public pro battle in `tests/data`)
 
